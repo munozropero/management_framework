@@ -1,0 +1,37 @@
+#!/usr/bin/env python
+
+import  Structures.ttypes as thrift
+from thrift import TSerialization
+import zmq
+
+host = "192.168.1.36"
+port = 1818
+events_port = 1919
+context = zmq.Context()
+api = context.socket(zmq.DEALER)
+api.connect("tcp://%s:%s" %(host, port))
+
+ping_app = thrift.App(ap_name="ping", binary_path="/bin/ping")
+ping_app.parameters =  ([thrift.Parameter(name="host", cmd='', type= "String", default_value="www.google.com")])
+
+api.send_multipart(['def_application', TSerialization.serialize(ping_app)])
+
+ping_inst = thrift.AppInstance()
+ping_inst.inst_name = "ping_instance"
+ping_inst.app_name = "ping"
+ping_inst.arguments = {"host": "www.ebay.de"}
+
+api.send_multipart(['add_application', "tplink01", TSerialization.serialize(ping_inst)])
+
+api.send_multipart(['start_experiment'])
+
+api.send_multipart (['startApp',"tplink01", "ping_instance"])
+
+api.send_multipart(['terminate_experiment'])
+
+
+
+
+
+
+

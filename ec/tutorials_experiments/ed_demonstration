@@ -1,0 +1,289 @@
+#!/usr/bin/env python
+
+import sys
+sys.path.append('../thrift_struct/gen-py')
+
+import time
+import logging
+logging.basicConfig(level=logging.DEBUG, format= '%(levelname)s %(module)s %(funcName)s(): %(message)s')
+
+import  Structures.ttypes as thrift
+from thrift import TSerialization
+import zmq
+import threading
+
+
+
+host = "192.168.1.35"
+port = 1818
+events_port = 1919
+context = zmq.Context()
+
+
+def event_functions_actuator():
+	event_socket = context.socket(zmq.PULL)
+	event_socket.connect("tcp://%s:%s" %(host, events_port))
+	forward_event_socket = context.socket(zmq.PAIR)
+	forward_event_socket.bind("inproc://forward")
+	while True:	
+		event_name = event_socket.recv()
+		forward_event_socket.send(event_name)
+		try:
+			function_to_call = globals()[event_name]
+			call_function_t = threading.Thread(target=function_to_call)
+			call_function_t.daemon = True
+			call_function_t.start()
+		except KeyError:
+			logging.info("No action scheduled for received event '{0}'".format(event_name))
+		
+
+
+
+# The purpose of this funciton is pause execution until event occurs
+def waitforEvent(event_name):
+	wait_socket = context.socket(zmq.PAIR)
+	wait_socket.connect("inproc://forward")
+	while True:
+		if event_name == wait_socket.recv():
+			logging.debug("Event '{0}'. Now ED can continue".format(event_name))
+			return
+
+
+def send(*args):
+	pipe_socket = context.socket(zmq.PUSH)
+	pipe_socket.connect("inproc://api")
+	# message = ["",]	# Use if the API is using a REP socket
+	message = [] 		# Use if the API is using a ROUTER socket
+	message.extend(args)
+	pipe_socket.send_multipart(message)	
+
+def api():
+	pipe_socket = context.socket(zmq.PULL)
+	pipe_socket.bind("inproc://api")	
+	api_socket = context.socket(zmq.DEALER)
+	api_socket.connect("tcp://%s:%s" %(host, port))
+	while True:
+		msg = pipe_socket.recv_multipart()
+		logging.debug("Message: {0}".format(msg))
+		api_socket.send_multipart(msg)
+		
+
+
+
+event_notifier_t = threading.Thread(target=event_functions_actuator)
+event_notifier_t.daemon = True
+event_notifier_t.start()
+api_t = threading.Thread(target=api)
+api_t.daemon = True
+api_t.start()
+
+# ----- HERE STARTS EXPERIMENT DESCRIPTION ---- #	
+
+def main():
+
+
+	defgroup ('allnodes', 'tplink01', 'tplink02', 'tplink03', 'tplink04', 'tplink05', 'tplink06', 'tplink07', 'tplink08')
+	defgroup ('servers', 'tplink01', 'tplink02', 'tplink03', 'tplink04')
+	defgroup ('clients', 'tplink05', 'tplink06', 'tplink07', 'tplink08')
+
+
+	# defgroup ('servers1', 'tplink01', 'tplink02')
+	defgroup ('servers2', 'tplink05', 'tplink06')
+	defgroup ('clients1', 'tplink03', 'tplink04')
+	# defgroup ('clients2', 'tplink07', 'tplink08')
+
+	defapplication (iperf) # Both for server and client
+	defapplication (iperf_client_wrapper)
+
+	iperf_server = ...
+	iperf_client = ...
+
+	add_application('servers', iperf_server)
+	add_application ('clients', iperf_client)
+
+	add_application ('servers2', iperf_server)
+	add_application ('clients1', iperf_client)
+
+	add_application ('tplink02', iperf_client)
+	add_application ('tplink07', iperf_server)
+
+	waitforEvent (allAppsInstalled)
+
+	startApp ('servers', 'iperf_server')
+
+	LOOP
+	for i in range(4):
+		peers = ['tplink01', 'tplink02', 'tplink03', 'tplink04']
+		change_parameter ("tplink05", "iperf_client", "client", peers[i%4])
+		change_parameter ("tplink06", "iperf_client", "client", peers[(i+1)%4])
+		change_parameter ("tplink07", "iperf_client", "client", peers[(i+2)%4])
+		change_parameter ("tplink08", "iperf_client", "client", peers[(i+3)%4])
+
+		startApp ('clients', 'iperf_client')
+
+		waitforEvent (all_finished)
+
+
+	ENDLOOP
+
+	# stopApp ('clients', 'iperf_client') # There is no need for this. They have already finished.
+
+	stopApp ('tplink03', 'iperf_server')
+	stopApp ('tplink04', 'iperf_server')
+
+
+	# Start second round of servers
+	startApp ('servers2', 'iperf_server')
+
+	# Now 1,2,5 and 6 are servers
+	waitforEvent('Serversrunning')
+
+
+	change_parameter ("tplink03", "iperf_client", "client", 'tplink01')
+	change_parameter ("tplink04", "iperf_client", "client", 'tplink02')
+	startApp ('clients1', 'iperf_client')
+
+	change_parameter ("tplink07", "iperf_client", "client", 'tplink05')
+	change_parameter ("tplink08", "iperf_client", "client", 'tplink06')
+	startApp ('tplink07', 'iperf_client')
+	startApp ('tplink08', 'iperf_client')
+
+	
+
+
+def onGroup1finished ():
+	change_parameter ("tplink03", "iperf_client", "client", 'tplink02')
+	change_parameter ("tplink04", "iperf_client", "client", 'tplink01')
+	startApp ('clients1', 'iperf_client')
+
+
+def onGroup2finished ():
+	change_parameter ("tplink07", "iperf_client", "client", 'tplink06')
+	change_parameter ("tplink08", "iperf_client", "client", 'tplink05')
+	startApp ('tplink07', 'iperf_client')
+	startApp ('tplink08', 'iperf_client')
+
+
+def onAllfinished ():
+
+
+
+
+
+
+
+------------
+	defgroup ('servers', 'tplink01', 'tplink02', 'tplink03', 'tplink04')
+	defgroup ('clients', 'tplink05', 'tplink06', 'tplink07', 'tplink08')
+
+
+
+	defapplication (iperf) # Both for server and client
+	defapplication (iperf_client_wrapper)
+	# defapplication (python_script_to_setAP)
+
+	iperf_server = ...
+	iperf_client = ...
+
+	addApplication ('servers', iperf_server)
+	addApplication ('servers1', iperf_server)
+	addApplication ('servers2', iperf_server)
+
+	addApplication ('clients', iperf_client)
+	addApplication ('clients1', iperf_client)
+	addApplication ('clients2', iperf_client)
+
+	addApplication (group3, iperf_server)  # Not needed, 1&2 already have iperf_server added
+	addApplication (group5, iperf_server)
+	addApplication (group4, iperf_client_wrapper_instance)
+	addApplication (group6, iperf_client_wrapper_instance) # Not needed 7&8 already have iperf_client_wrapper_instance added
+
+	startexperiment ()
+
+	allnodes.startapp(python_script_to_setAP)
+
+On allnodes_in AP:
+	group1.startapp(iperf_server)
+	group2.startapp(python wrapper for iperf_client_bidirectional_measurement) # The wrapper is to include OML or sth similar
+	waitforEvent('group2finished')
+	group1.stopApp (iperf_server)
+	group1.releaseApp (iperf_server) # Not essential and not implemented in APIserver yet
+
+	group3.startApp(iperf_server)
+	group5.startApp(iperf_server)
+	group4.startApp(iperf_client_wrapper_instance)
+	group6.startApp(iperf_client_wrapper_instance)
+
+	for each node:
+		for each peer the node has to know its connectivity:
+			associate_program.ap_host = peer_address
+			socket.send('addApplication', 'program that associates with AP <peer> ') # This application must be 
+
+			waitforEvent('On')
+
+for each node you need to associate (by just calling an application) with all the other AP routers, one at a time, Then, every time you associate to a different AP,  run iperf, which only outputs information to STDOUT. 
+)
+
+
+
+
+	myapp = thrift.App(ap_name="iperf", binary_path="/usr/bin/iperf", description="Hello World Application")
+	myapp.parameters =  ([thrift.Parameter(name="server", cmd='-s', type= "Flag", default_value="False"), 
+		thrift.Parameter(name="client", cmd='-c', type= "String")] )
+
+
+	send('def_application', TSerialization.serialize(myapp))
+	send('def_group', "Servers", "kali")
+
+
+	app_inst = thrift.AppInstance()
+	app_inst.inst_name = "iperf_server"
+	app_inst.app_name = "iperf"
+	app_inst.arguments = {"server": ""}
+	# app_inst.arguments = {"client": "192.168.1.35"}
+	# app_inst.environment =
+	# app_inst.clean_env =					
+	# app_inst.map_err_to_out =
+
+	# my_iface = thrift.Iface(if_name= "wlan0") 	# MOCKUP: This is obviously incomplete
+
+	send('add_application', "kali", TSerialization.serialize(app_inst))
+	# api_server.add_application("kali", app_inst)
+
+	event_trigger = thrift.EventTrigger(name="kali_installed" ,enabled=True)
+	event_trigger.conditions = {'kali.iperf_server': 'Installed'}
+
+	send('def_event',TSerialization.serialize(event_trigger))
+
+
+	send('start_experiment')
+
+	waitforEvent("experimentOver")
+
+	# waitforEvent("kali_installed")
+
+def kali_installed():
+	send('startAllApps',"kali")
+
+	time.sleep(4)
+	send('pauseApp',"kali", "iperf_server")
+
+
+	time.sleep(10)
+	send ('startApp',"kali", "iperf_server")
+
+
+
+
+main()
+
+
+
+
+# def send (*args):
+# 	api_socket = context.socket(zmq.PAIR)
+# 	wait_socket.connect("inproc://api")
+# 	global api_socket
+# 	message = ["",]
+# 	message.extend(args)
+# 	api_socket.send_multipart(message)
